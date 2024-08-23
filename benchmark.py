@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from time import perf_counter
 
 import torch
-from diffusers import StableDiffusionXLPipeline
+from diffusers import StableDiffusionXLPipeline, LCMScheduler
 from torch import Generator, cosine_similarity, Tensor
 
 from os import urandom
@@ -76,6 +76,26 @@ def generate(pipeline: StableDiffusionXLPipeline, prompt: str, seed: int):
         generation_time=generation_time,
     )
 
+def efficient_generate(pipeline: StableDiffusionXLPipeline, prompt: str, seed: int):
+
+    start = perf_counter()
+    output = pipeline(
+        prompt=prompt,
+        generator=Generator(pipeline.device).manual_seed(seed),
+        output_type="latent",
+        num_inference_steps=1,
+        guidance_scale=1,
+    ).images
+
+    generation_time = perf_counter() - start
+
+    return GenerationOutput(
+        prompt=prompt,
+        seed=seed,
+        output=output,
+        generation_time=generation_time,
+    )
+
 
 def compare_checkpoints():
     baseline_pipeline = StableDiffusionXLPipeline.from_pretrained(
@@ -103,11 +123,17 @@ def compare_checkpoints():
     average_time = float("inf")
     average_similarity = 1.0
 
-    pipeline = StableDiffusionXLPipeline.from_pretrained(
-        MODEL_DIRECTORY,
+
+    pipeline:StableDiffusionXLPipeline = StableDiffusionXLPipeline.from_pretrained(
+        "stablediffusionapi/newdream-sdxl-20",
         torch_dtype=torch.float16,
         use_safetensors=True,
     ).to("cuda")
+
+    adapter_id = "mhussainahmad/lcmlora-sdxl-0.55" 
+    pipeline.scheduler = LCMScheduler.from_config(pipeline.scheduler.config)
+    pipeline.load_lora_weights(adapter_id)
+
 
     i = 0
 
@@ -118,7 +144,7 @@ def compare_checkpoints():
         generated = i
         remaining = SAMPLE_COUNT - generated
 
-        generation = generate(
+        generation = efficient_generate(
             pipeline,
             baseline.prompt,
             baseline.seed,
