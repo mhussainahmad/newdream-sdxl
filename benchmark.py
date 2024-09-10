@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from time import perf_counter
 
 import torch
-from diffusers import StableDiffusionXLPipeline, LCMScheduler
+from diffusers import StableDiffusionXLPipeline, LCMScheduler, StableDiffusionXLImg2ImgPipeline
 from torch import Generator, cosine_similarity, Tensor
 
 from os import urandom
@@ -67,6 +67,8 @@ def generate(pipeline: StableDiffusionXLPipeline, prompt: str, seed: int):
         num_inference_steps=20,
     ).images
 
+    # output.save(f"original_{seed}.png")
+
     generation_time = perf_counter() - start
 
     return GenerationOutput(
@@ -76,23 +78,33 @@ def generate(pipeline: StableDiffusionXLPipeline, prompt: str, seed: int):
         generation_time=generation_time,
     )
 
-def efficient_generate(pipeline: StableDiffusionXLPipeline, prompt: str, seed: int):
+def efficient_generate(pipeline: StableDiffusionXLPipeline, pipeline_with_lora: StableDiffusionXLPipeline, prompt: str, seed: int):
 
     start = perf_counter()
-    output = pipeline(
+
+    default = pipeline(
+        prompt=prompt,
+        generator=Generator(pipeline.device).manual_seed(seed),
+        output_type="latent",
+        num_inference_steps=10,
+    ).images
+
+    lora = pipeline_with_lora(
         prompt=prompt,
         generator=Generator(pipeline.device).manual_seed(seed),
         output_type="latent",
         num_inference_steps=1,
-        guidance_scale=1,
+        guidance_scale=0.01,
     ).images
+    blended_latents = 0.8 * default + 0.2 * lora
 
     generation_time = perf_counter() - start
+
 
     return GenerationOutput(
         prompt=prompt,
         seed=seed,
-        output=output,
+        output=blended_latents,
         generation_time=generation_time,
     )
 
@@ -129,10 +141,16 @@ def compare_checkpoints():
         torch_dtype=torch.float16,
         use_safetensors=True,
     ).to("cuda")
+    pipeline_with_lora:StableDiffusionXLPipeline = StableDiffusionXLPipeline.from_pretrained(
+        "stablediffusionapi/newdream-sdxl-20",
+        torch_dtype=torch.float16,
+        use_safetensors=True,
+    ).to("cuda")
 
-    adapter_id = "mhussainahmad/lcmlora-sdxl-0.55" 
-    pipeline.scheduler = LCMScheduler.from_config(pipeline.scheduler.config)
-    pipeline.load_lora_weights(adapter_id)
+
+    adapter_id = "mhussainahmad/sdxl-lcmlora-1024-100k-3000steps" 
+    pipeline_with_lora.scheduler = LCMScheduler.from_config(pipeline.scheduler.config)
+    pipeline_with_lora.load_lora_weights(adapter_id)
 
 
     i = 0
@@ -146,6 +164,7 @@ def compare_checkpoints():
 
         generation = efficient_generate(
             pipeline,
+            pipeline_with_lora,
             baseline.prompt,
             baseline.seed,
         )
